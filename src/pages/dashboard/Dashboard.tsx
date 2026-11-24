@@ -2,7 +2,7 @@ import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import {
   Users, FolderKanban, Building2, CalendarOff, Receipt,
-  Clock, CheckCircle, Briefcase, ClipboardList, UserCheck, Package,
+  CheckCircle, ClipboardList, UserCheck, Package,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
