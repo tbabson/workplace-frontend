@@ -33,6 +33,7 @@ export default function ProjectDetail() {
   const canManageBudget = role === 'super_admin' || role === 'procurement';
   const [tab, setTab] = useState<Tab>('Tasks');
   const [taskModal, setTaskModal] = useState(false);
+  const [viewTaskId, setViewTaskId] = useState<string | null>(null);
   const [milestoneModal, setMilestoneModal] = useState(false);
 
   const { data: project, isLoading } = useQuery({
@@ -90,6 +91,8 @@ export default function ProjectDetail() {
     ? members
     : members.filter((u) => isInDepartmentTree(u.department_id, user?.department_id, depts));
   const [memberToAdd, setMemberToAdd] = useState('');
+  const userName = (uid: string | null) => (users ?? []).find((u) => u.id === uid)?.name ?? 'Unknown';
+  const viewTask = (tasks ?? []).find((t: Task) => t.id === viewTaskId) ?? null;
 
   const assignMut = useMutation({
     mutationFn: (userId: string) => projectsApi.assign(id!, userId),
@@ -241,7 +244,7 @@ export default function ProjectDetail() {
       {tab === 'Tasks' && (
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
           <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-            <h3 className="font-semibold text-gray-900">Tasks ({tasks?.length ?? 0})</h3>
+            <h3 className="font-semibold text-gray-900">{isAdmin || role === 'dept_head' ? 'Tasks' : 'My Tasks'} ({tasks?.length ?? 0})</h3>
             {canManageTasks && (
               <Button size="sm" onClick={() => { taskForm.reset({ status: 'todo' }); setTaskModal(true); }}>
                 <Plus size={14} /> Add Task
@@ -250,7 +253,7 @@ export default function ProjectDetail() {
           </div>
           <div className="divide-y divide-gray-50">
             {!tasks?.length ? (
-              <div className="px-5 py-8 text-center text-sm text-gray-400">No tasks yet</div>
+              <div className="px-5 py-8 text-center text-sm text-gray-400">{isAdmin || role === 'dept_head' ? 'No tasks yet' : 'No tasks assigned to you yet'}</div>
             ) : (
               tasks.map((t: Task) => {
                 // Backend: only super_admin or the task's assignee may change its status.
@@ -265,10 +268,18 @@ export default function ProjectDetail() {
                   >
                     {t.status === 'done' ? <CheckCircle size={18} className="text-green-500" /> : <Circle size={18} />}
                   </button>
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-sm font-medium ${t.status === 'done' ? 'line-through text-gray-400' : 'text-gray-900'}`}>{t.title}</p>
-                    {t.due_date && <p className="text-xs text-gray-400">Due {formatDate(t.due_date)}</p>}
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setViewTaskId(t.id)}
+                    className="flex-1 min-w-0 text-left rounded-md hover:bg-gray-50 -mx-1 px-1"
+                    title="Open task"
+                  >
+                    <p className={`text-sm font-medium ${t.status === 'done' ? 'line-through text-gray-400' : 'text-gray-900 hover:text-indigo-700'}`}>{t.title}</p>
+                    <p className="text-xs text-gray-400">
+                      {t.assigned_to ? `Assigned to ${userName(t.assigned_to)}` : 'Unassigned'}
+                      {t.due_date && ` · Due ${formatDate(t.due_date)}`}
+                    </p>
+                  </button>
                   <Badge status={t.status} />
                   {canManageTasks && (
                     <button
@@ -332,7 +343,8 @@ export default function ProjectDetail() {
                         {m.role.replace(/_/g, ' ')}{m.department_name ? ` · ${m.department_name}` : ''}
                       </p>
                     </div>
-                    {!hasDuty && m.role !== 'dept_head' && m.role !== 'super_admin' && (
+                    {/* Only managers see every relevant task, so only they can tell who lacks a duty. */}
+                    {canManageTasks && assignableMembers.some((a) => a.id === m.id) && !hasDuty && m.role !== 'dept_head' && m.role !== 'super_admin' && (
                       <span className="text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">Awaiting duty</span>
                     )}
                     {isAdmin && (
@@ -511,6 +523,21 @@ export default function ProjectDetail() {
         </div>
       )}
 
+      {/* Task detail */}
+      <Modal open={!!viewTask} onClose={() => setViewTaskId(null)} title="Task" size="lg">
+        {viewTask && (
+          <TaskDetail
+            key={viewTask.id}
+            task={viewTask}
+            canEdit={canManageTasks}
+            canChangeStatus={canManageTasks || viewTask.assigned_to === user?.id}
+            assignees={assignableMembers.map((u) => ({ value: u.id, label: u.name }))}
+            userName={userName}
+            onSaved={() => { qc.invalidateQueries({ queryKey: ['tasks', id] }); setViewTaskId(null); }}
+          />
+        )}
+      </Modal>
+
       {/* Task Modal */}
       <Modal open={taskModal} onClose={() => { setTaskModal(false); taskForm.reset(); }} title="Add Task">
         <form onSubmit={taskForm.handleSubmit((d) => createTaskMut.mutate(d))} className="space-y-4">
@@ -571,6 +598,125 @@ export default function ProjectDetail() {
           </div>
         </form>
       </Modal>
+    </div>
+  );
+}
+
+const TASK_STATUSES = [
+  { value: 'todo', label: 'To Do' },
+  { value: 'in_progress', label: 'In Progress' },
+  { value: 'done', label: 'Done' },
+];
+
+/**
+ * A task's details. The assignee may change only its status; super admins and
+ * dept heads managing the project may also edit the title, description, assignee
+ * and due date (the backend enforces the same rules).
+ */
+function TaskDetail({ task, canEdit, canChangeStatus, assignees, userName, onSaved }: {
+  task: Task;
+  canEdit: boolean;
+  canChangeStatus: boolean;
+  assignees: { value: string; label: string }[];
+  userName: (id: string | null) => string;
+  onSaved: () => void;
+}) {
+  const [title, setTitle] = useState(task.title);
+  const [description, setDescription] = useState(task.description ?? '');
+  const [status, setStatus] = useState<Task['status']>(task.status);
+  const [assignedTo, setAssignedTo] = useState(task.assigned_to ?? '');
+  const [dueDate, setDueDate] = useState(task.due_date ? task.due_date.slice(0, 10) : '');
+
+  const saveMut = useMutation({
+    mutationFn: () => {
+      const data: Partial<Task> = {};
+      if (status !== task.status) data.status = status;
+      if (canEdit) {
+        if (title.trim() !== task.title) data.title = title.trim();
+        if (description !== (task.description ?? '')) data.description = description;
+        // "" clears the assignee / due date.
+        if (assignedTo !== (task.assigned_to ?? '')) data.assigned_to = assignedTo;
+        if (dueDate !== (task.due_date ? task.due_date.slice(0, 10) : '')) data.due_date = dueDate;
+      }
+      return projectsApi.updateTask(task.id, data);
+    },
+    onSuccess: () => { toast.success('Task updated'); onSaved(); },
+    onError: (e) => toast.error(apiError(e, 'Failed to update task')),
+  });
+
+  const dirty =
+    status !== task.status ||
+    (canEdit && (
+      title.trim() !== task.title ||
+      description !== (task.description ?? '') ||
+      assignedTo !== (task.assigned_to ?? '') ||
+      dueDate !== (task.due_date ? task.due_date.slice(0, 10) : '')
+    ));
+
+  // The current assignee stays selectable even if they're outside the caller's list.
+  const assigneeOptions = [
+    { value: '', label: 'Unassigned' },
+    ...assignees,
+    ...(task.assigned_to && !assignees.some((a) => a.value === task.assigned_to)
+      ? [{ value: task.assigned_to, label: userName(task.assigned_to) }]
+      : []),
+  ];
+
+  return (
+    <div className="space-y-4">
+      {canEdit ? (
+        <Input label="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
+      ) : (
+        <h3 className="text-base font-semibold text-gray-900">{task.title}</h3>
+      )}
+
+      {canEdit ? (
+        <Textarea label="Description" rows={4} value={description} onChange={(e) => setDescription(e.target.value)} />
+      ) : (
+        <div>
+          <p className="text-xs font-medium text-gray-500 mb-1">Description</p>
+          <p className="text-sm text-gray-700 whitespace-pre-wrap">{task.description || 'No description'}</p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {canChangeStatus ? (
+          <Select label="Status" options={TASK_STATUSES} value={status} onChange={(e) => setStatus(e.target.value as Task['status'])} />
+        ) : (
+          <div>
+            <p className="text-xs font-medium text-gray-500 mb-1">Status</p>
+            <Badge status={task.status} />
+          </div>
+        )}
+        {canEdit ? (
+          <Input label="Due Date" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+        ) : (
+          <div>
+            <p className="text-xs font-medium text-gray-500 mb-1">Due date</p>
+            <p className="text-sm text-gray-700">{task.due_date ? formatDate(task.due_date) : '—'}</p>
+          </div>
+        )}
+        {canEdit ? (
+          <Select label="Assigned To" options={assigneeOptions} value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} />
+        ) : (
+          <div>
+            <p className="text-xs font-medium text-gray-500 mb-1">Assigned to</p>
+            <p className="text-sm text-gray-700">{task.assigned_to ? userName(task.assigned_to) : 'Unassigned'}</p>
+          </div>
+        )}
+        <div>
+          <p className="text-xs font-medium text-gray-500 mb-1">Created by</p>
+          <p className="text-sm text-gray-700">{userName(task.created_by)} · {formatDate(task.created_at)}</p>
+        </div>
+      </div>
+
+      {(canEdit || canChangeStatus) && (
+        <div className="flex justify-end pt-2">
+          <Button onClick={() => saveMut.mutate()} loading={saveMut.isPending} disabled={!dirty || (canEdit && !title.trim())}>
+            Save Changes
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
