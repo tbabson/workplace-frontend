@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  ArrowLeft, Plus, CheckCircle, Circle, Milestone, MessageCircle, DollarSign, Trash2,
+  ArrowLeft, Plus, CheckCircle, Circle, Milestone, MessageCircle, DollarSign, Trash2, UserMinus,
 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { projectsApi } from '../../api/projects';
@@ -16,9 +16,11 @@ import { Avatar } from '../../components/ui/Avatar';
 import { PageSpinner } from '../../components/ui/Spinner';
 import { formatDate, formatCurrency, timeAgo, localDate, apiError } from '../../utils/helpers';
 import { useAuthStore } from '../../store/authStore';
+import { departmentsApi } from '../../api/departments';
+import { isInDepartmentTree } from '../../utils/departments';
 import toast from 'react-hot-toast';
 
-const TABS = ['Tasks', 'Milestones', 'Comments', 'Budget'] as const;
+const TABS = ['Tasks', 'Members', 'Milestones', 'Comments', 'Budget'] as const;
 type Tab = typeof TABS[number];
 
 export default function ProjectDetail() {
@@ -68,6 +70,43 @@ export default function ProjectDetail() {
     queryFn: () => usersApi.list().then((r) => r.data.data),
   });
 
+  const { data: assigneeIds } = useQuery({
+    queryKey: ['assignees', id],
+    queryFn: () => projectsApi.getAssignees(id!).then((r) => r.data.data ?? []),
+    enabled: !!id,
+  });
+
+  const { data: depts } = useQuery({
+    queryKey: ['departments'],
+    queryFn: () => departmentsApi.list().then((r) => r.data.data),
+  });
+
+  // Backend rules: super_admin manages any project's duties; a dept head who is on
+  // the project manages duties for staff in their department and its sub-departments.
+  const members = (users ?? []).filter((u) => (assigneeIds ?? []).includes(u.id));
+  const isMember = !!user && (assigneeIds ?? []).includes(user.id);
+  const canManageTasks = isAdmin || (role === 'dept_head' && isMember);
+  const assignableMembers = isAdmin
+    ? members
+    : members.filter((u) => isInDepartmentTree(u.department_id, user?.department_id, depts));
+  const [memberToAdd, setMemberToAdd] = useState('');
+
+  const assignMut = useMutation({
+    mutationFn: (userId: string) => projectsApi.assign(id!, userId),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['assignees', id] });
+      setMemberToAdd('');
+      toast.success((res.data as { data?: { message?: string } })?.data?.message ?? 'Member added');
+    },
+    onError: (e) => toast.error(apiError(e, 'Failed to add member')),
+  });
+
+  const unassignMut = useMutation({
+    mutationFn: (userId: string) => projectsApi.unassign(id!, userId),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['assignees', id] }); toast.success('Member removed'); },
+    onError: (e) => toast.error(apiError(e, 'Failed to remove member')),
+  });
+
   // Task form
   const taskForm = useForm<Partial<Task>>();
   const createTaskMut = useMutation({
@@ -94,6 +133,7 @@ export default function ProjectDetail() {
   const deleteTaskMut = useMutation({
     mutationFn: (taskId: string) => projectsApi.deleteTask(taskId),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['tasks', id] }); toast.success('Task deleted'); },
+    onError: (e) => toast.error(apiError(e, 'Failed to delete task')),
   });
 
   // Milestone form
@@ -202,7 +242,7 @@ export default function ProjectDetail() {
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
           <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
             <h3 className="font-semibold text-gray-900">Tasks ({tasks?.length ?? 0})</h3>
-            {isAdmin && (
+            {canManageTasks && (
               <Button size="sm" onClick={() => { taskForm.reset({ status: 'todo' }); setTaskModal(true); }}>
                 <Plus size={14} /> Add Task
               </Button>
@@ -214,7 +254,7 @@ export default function ProjectDetail() {
             ) : (
               tasks.map((t: Task) => {
                 // Backend: only super_admin or the task's assignee may change its status.
-                const canToggle = isAdmin || t.assigned_to === user?.id;
+                const canToggle = canManageTasks || t.assigned_to === user?.id;
                 return (
                 <div key={t.id} className="flex items-center gap-3 px-5 py-3 hover:bg-gray-50/50">
                   <button
@@ -230,7 +270,7 @@ export default function ProjectDetail() {
                     {t.due_date && <p className="text-xs text-gray-400">Due {formatDate(t.due_date)}</p>}
                   </div>
                   <Badge status={t.status} />
-                  {isAdmin && (
+                  {canManageTasks && (
                     <button
                       onClick={() => { if (confirm('Delete task?')) deleteTaskMut.mutate(t.id); }}
                       className="p-1 text-gray-300 hover:text-red-500 transition-colors"
@@ -239,6 +279,72 @@ export default function ProjectDetail() {
                     </button>
                   )}
                 </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Members */}
+      {tab === 'Members' && (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm">
+          <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-gray-100">
+            <h3 className="font-semibold text-gray-900">Members ({members.length})</h3>
+            {isAdmin && (
+              <div className="flex items-center gap-2">
+                <Select
+                  options={[
+                    { value: '', label: 'Add a member…' },
+                    ...(users ?? [])
+                      .filter((u) => u.is_active && !(assigneeIds ?? []).includes(u.id))
+                      .map((u) => ({
+                        value: u.id,
+                        label: u.role === 'dept_head' ? `${u.name} (Dept head — adds their department)` : u.name,
+                      })),
+                  ]}
+                  value={memberToAdd}
+                  onChange={(e) => setMemberToAdd(e.target.value)}
+                />
+                <Button size="sm" disabled={!memberToAdd} loading={assignMut.isPending} onClick={() => assignMut.mutate(memberToAdd)}>
+                  <Plus size={14} /> Add
+                </Button>
+              </div>
+            )}
+          </div>
+          {role === 'dept_head' && isMember && (
+            <p className="px-5 pt-3 text-xs text-gray-500">
+              Staff from your department were added with you. Give each of them a duty from the Tasks tab.
+            </p>
+          )}
+          <div className="divide-y divide-gray-50">
+            {!members.length ? (
+              <div className="px-5 py-8 text-center text-sm text-gray-400">No members yet</div>
+            ) : (
+              members.map((m) => {
+                const hasDuty = (tasks ?? []).some((t: Task) => t.assigned_to === m.id);
+                return (
+                  <div key={m.id} className="flex items-center gap-3 px-5 py-3">
+                    <Avatar name={m.name} size="sm" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900">{m.name}</p>
+                      <p className="text-xs text-gray-400 capitalize">
+                        {m.role.replace(/_/g, ' ')}{m.department_name ? ` · ${m.department_name}` : ''}
+                      </p>
+                    </div>
+                    {!hasDuty && m.role !== 'dept_head' && m.role !== 'super_admin' && (
+                      <span className="text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">Awaiting duty</span>
+                    )}
+                    {isAdmin && (
+                      <button
+                        onClick={() => { if (confirm(`Remove ${m.name} from this project?`)) unassignMut.mutate(m.id); }}
+                        className="p-1 text-gray-300 hover:text-red-500 transition-colors"
+                        title="Remove from project"
+                      >
+                        <UserMinus size={14} />
+                      </button>
+                    )}
+                  </div>
                 );
               })
             )}
@@ -418,7 +524,7 @@ export default function ProjectDetail() {
           <Input label="Due Date" type="date" {...taskForm.register('due_date')} />
           <Select
             label="Assign To"
-            options={[{ value: '', label: 'Unassigned' }, ...(users ?? []).map((u) => ({ value: u.id, label: u.name }))]}
+            options={[{ value: '', label: 'Unassigned' }, ...assignableMembers.map((u) => ({ value: u.id, label: u.name }))]}
             {...taskForm.register('assigned_to')}
           />
           <div className="flex gap-3 pt-2">

@@ -14,6 +14,8 @@ import { EmptyState } from '../../components/shared/EmptyState';
 import { Avatar } from '../../components/ui/Avatar';
 import { formatDate, apiError } from '../../utils/helpers';
 import { useAuthStore } from '../../store/authStore';
+import { departmentsApi } from '../../api/departments';
+import { isInDepartmentTree } from '../../utils/departments';
 import toast from 'react-hot-toast';
 
 interface ReviewForm { user_id: string; period: string; rating: number; goals: string; comments: string; }
@@ -58,8 +60,15 @@ export default function Reviews() {
   });
 
   const getUserName = (id: string) => users?.find((u) => u.id === id)?.name ?? 'Unknown';
-  // Backend rejects reviewing yourself.
-  const userOptions = (users ?? []).filter((u) => u.id !== user?.id).map((u) => ({ value: u.id, label: u.name }));
+  const { data: depts } = useQuery({
+    queryKey: ['departments'],
+    queryFn: () => departmentsApi.list().then((r) => r.data.data),
+  });
+
+  // Backend rejects reviewing yourself, and dept heads only their department and its sub-departments.
+  const userOptions = (users ?? [])
+    .filter((u) => u.id !== user?.id)
+    .filter((u) => user?.role !== 'dept_head' || isInDepartmentTree(u.department_id, user?.department_id, depts)).map((u) => ({ value: u.id, label: u.name }));
 
   if (isLoading) return <PageSpinner />;
   const reviews: Review[] = data ?? [];

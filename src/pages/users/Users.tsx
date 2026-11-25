@@ -14,6 +14,7 @@ import { PageHeader } from '../../components/shared/PageHeader';
 import { PageSpinner } from '../../components/ui/Spinner';
 import { EmptyState } from '../../components/shared/EmptyState';
 import { apiError } from '../../utils/helpers';
+import { departmentOptions } from '../../utils/departments';
 import toast from 'react-hot-toast';
 
 const ROLES = [
@@ -113,10 +114,8 @@ export default function Users() {
     (u) => u.name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase())
   );
 
-  const deptOptions = [
-    { value: '', label: 'No Department' },
-    ...(depts ?? []).map((d) => ({ value: d.id, label: d.name })),
-  ];
+  // Sub-departments are listed under their parent, e.g. "Admin › HR".
+  const deptOptions = [{ value: '', label: 'No Department' }, ...departmentOptions(depts)];
 
   if (isLoading) return <PageSpinner />;
 

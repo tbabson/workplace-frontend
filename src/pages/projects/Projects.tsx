@@ -15,6 +15,7 @@ import { PageSpinner } from '../../components/ui/Spinner';
 import { EmptyState } from '../../components/shared/EmptyState';
 import { formatDate } from '../../utils/helpers';
 import { useAuthStore } from '../../store/authStore';
+import { departmentOptions } from '../../utils/departments';
 import toast from 'react-hot-toast';
 
 const STATUS_OPTIONS = [
@@ -97,10 +98,8 @@ export default function Projects() {
     setModalOpen(true);
   };
 
-  const deptOptions = [
-    { value: '', label: 'No Department' },
-    ...(depts ?? []).map((d) => ({ value: d.id, label: d.name })),
-  ];
+  // Sub-departments are listed under their parent, e.g. "Admin › HR".
+  const deptOptions = [{ value: '', label: 'No Department' }, ...departmentOptions(depts)];
 
   const projects = (Array.isArray(data) ? data : []).filter((p) => !filterStatus || p.status === filterStatus);
 

@@ -16,6 +16,8 @@ export interface User {
 export interface Department {
   id: string;
   name: string;
+  /** Set for a sub-department, e.g. HR under Admin. */
+  parent_id: string | null;
   head_id: string | null;
   created_at: string;
   updated_at: string;

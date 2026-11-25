@@ -14,6 +14,7 @@ import { PageSpinner } from '../../components/ui/Spinner';
 import { EmptyState } from '../../components/shared/EmptyState';
 import { formatDateTime, timeAgo, apiError } from '../../utils/helpers';
 import { useAuthStore } from '../../store/authStore';
+import { departmentOptions } from '../../utils/departments';
 import toast from 'react-hot-toast';
 
 interface MemoForm {
@@ -81,8 +82,8 @@ export default function Memos() {
     ...(users ?? []).filter((u) => u.id !== user?.id).map((u) => ({ value: u.id, label: u.name })),
   ];
   const deptOptions = isDeptHead
-    ? (depts ?? []).filter((d) => d.id === user?.department_id).map((d) => ({ value: d.id, label: d.name }))
-    : [{ value: '', label: 'All Departments' }, ...(depts ?? []).map((d) => ({ value: d.id, label: d.name }))];
+    ? departmentOptions(depts).filter((o) => o.value === user?.department_id)
+    : [{ value: '', label: 'All Departments' }, ...departmentOptions(depts)];
 
   if (isLoading) return <PageSpinner />;
   const memos: Memo[] = data ?? [];

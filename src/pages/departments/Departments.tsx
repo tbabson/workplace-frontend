@@ -15,10 +15,13 @@ import { PageSpinner } from '../../components/ui/Spinner';
 import { EmptyState } from '../../components/shared/EmptyState';
 import { Card, CardBody } from '../../components/ui/Card';
 import { formatDate } from '../../utils/helpers';
+import { apiError } from '../../utils/helpers';
+import { departmentOptions } from '../../utils/departments';
 import toast from 'react-hot-toast';
 
 interface DeptForm {
   name: string;
+  parent_id: string;
   head_id: string;
 }
 
@@ -42,27 +45,27 @@ export default function Departments() {
   const createMut = useMutation({
     mutationFn: (d: DeptForm) => departmentsApi.create(d),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['departments'] }); setModalOpen(false); reset(); toast.success('Department created'); },
-    onError: () => toast.error('Failed to create department'),
+    onError: (e) => toast.error(apiError(e, 'Failed to create department')),
   });
 
   const updateMut = useMutation({
     mutationFn: (d: DeptForm) => departmentsApi.update(editing!.id, d),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['departments'] }); setModalOpen(false); setEditing(null); reset(); toast.success('Updated'); },
-    onError: () => toast.error('Failed to update'),
+    onError: (e) => toast.error(apiError(e, 'Failed to update')),
   });
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => departmentsApi.delete(id),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['departments'] }); toast.success('Deleted'); },
-    onError: () => toast.error('Failed to delete'),
+    onError: (e) => toast.error(apiError(e, 'Failed to delete')),
   });
 
   const onSubmit = (d: DeptForm) => editing ? updateMut.mutate(d) : createMut.mutate(d);
 
-  const openCreate = () => { setEditing(null); reset(); setModalOpen(true); };
+  const openCreate = () => { setEditing(null); reset({ name: '', parent_id: '', head_id: '' }); setModalOpen(true); };
   const openEdit = (dep: Department) => {
     setEditing(dep);
-    reset({ name: dep.name, head_id: dep.head_id ?? '' });
+    reset({ name: dep.name, parent_id: dep.parent_id ?? '', head_id: dep.head_id ?? '' });
     setModalOpen(true);
   };
 
@@ -70,6 +73,22 @@ export default function Departments() {
     { value: '', label: 'No Head' },
     ...(users ?? []).map((u) => ({ value: u.id, label: u.name })),
   ];
+
+  // Only top-level departments can be parents (one level of nesting), and a
+  // department can't be placed under itself.
+  const parentOptions = [
+    { value: '', label: 'None (top-level department)' },
+    ...(data ?? [])
+      .filter((d) => !d.parent_id && d.id !== editing?.id)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((d) => ({ value: d.id, label: d.name })),
+  ];
+
+  // Cards in hierarchy order: each department followed by its sub-departments.
+  const ordered = departmentOptions(data)
+    .map((o) => (data ?? []).find((d) => d.id === o.value))
+    .filter((d): d is Department => !!d);
+  const parentName = (id: string | null) => (data ?? []).find((d) => d.id === id)?.name;
 
   const getUserName = (id: string | null) => users?.find((u) => u.id === id)?.name ?? '—';
 
@@ -98,7 +117,7 @@ export default function Departments() {
         <EmptyState icon={Building2} title="No departments yet" action={<Button onClick={openCreate}>Add Department</Button>} />
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {data.map((dep) => {
+          {ordered.map((dep) => {
             const members = membersByDept.get(dep.id) ?? [];
             return (
               <Card key={dep.id}>
@@ -111,6 +130,9 @@ export default function Departments() {
                       </div>
                       <div>
                         <h3 className="font-semibold text-gray-900">{dep.name}</h3>
+                        {dep.parent_id && (
+                          <p className="text-xs text-indigo-600 mt-0.5">Under {parentName(dep.parent_id) ?? '—'}</p>
+                        )}
                         <p className="text-xs text-gray-500 mt-0.5">Head: {getUserName(dep.head_id)}</p>
                       </div>
                     </div>
@@ -166,6 +188,7 @@ export default function Departments() {
       <Modal open={modalOpen} onClose={() => { setModalOpen(false); setEditing(null); reset(); }} title={editing ? 'Edit Department' : 'Add Department'}>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <Input label="Department Name" error={errors.name?.message} {...register('name', { required: 'Name is required' })} />
+          <Select label="Parent Department" options={parentOptions} {...register('parent_id')} />
           <Select label="Department Head" options={userOptions} {...register('head_id')} />
           <div className="flex gap-3 pt-2">
             <Button type="button" variant="outline" onClick={() => setModalOpen(false)} className="flex-1">Cancel</Button>

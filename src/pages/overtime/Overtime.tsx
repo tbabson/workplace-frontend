@@ -12,6 +12,8 @@ import { PageHeader } from '../../components/shared/PageHeader';
 import { PageSpinner } from '../../components/ui/Spinner';
 import { EmptyState } from '../../components/shared/EmptyState';
 import { formatDateTime, formatCurrency, localDateTimeInput, apiError } from '../../utils/helpers';
+import { departmentsApi } from '../../api/departments';
+import { isInDepartmentTree } from '../../utils/departments';
 import toast from 'react-hot-toast';
 
 interface OvertimeForm {
@@ -46,9 +48,15 @@ export default function Overtime() {
     enabled: isManager,
   });
 
+  const { data: depts } = useQuery({
+    queryKey: ['departments'],
+    queryFn: () => departmentsApi.list().then((r) => r.data.data),
+  });
+
   const staffList = (usersData ?? []).filter((u) => {
     if (u.role === 'super_admin') return false;
-    if (user?.role === 'dept_head') return u.department_id === user.department_id;
+    // Dept heads oversee their department and its sub-departments.
+    if (user?.role === 'dept_head') return isInDepartmentTree(u.department_id, user.department_id, depts);
     return true; // super_admin sees everyone
   });
 
