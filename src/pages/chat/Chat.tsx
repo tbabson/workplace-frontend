@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Fragment, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Send, Plus, MessageSquare, Trash2, ArrowLeft, Reply, Smile, X, MessageCircle } from 'lucide-react';
+import { Send, Plus, MessageSquare, Trash2, ArrowLeft, Reply, Smile, X, MessageCircle, FolderKanban } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { chatApi } from '../../api/chat';
 import { usersApi } from '../../api/users';
 import { WS_URL } from '../../api/client';
@@ -11,7 +12,7 @@ import { Avatar } from '../../components/ui/Avatar';
 import { Modal } from '../../components/ui/Modal';
 import { Input, Select } from '../../components/ui/Input';
 import { PageSpinner } from '../../components/ui/Spinner';
-import { timeAgo, apiError } from '../../utils/helpers';
+import { apiError } from '../../utils/helpers';
 import '../../utils/sound'; // registers global workplace:notification listener
 import { useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
@@ -27,6 +28,30 @@ const ROOM_COLORS: Record<string, string> = {
 
 // The backend returns error text in `error`.
 const apiMsg = apiError;
+
+// WhatsApp-style day label for the divider above each day's messages.
+function dayLabel(iso: string): string {
+  const d = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  const withinWeek = today.getTime() - d.getTime() < 6 * 24 * 3600 * 1000;
+  return withinWeek
+    ? d.toLocaleDateString(undefined, { weekday: 'long' })
+    : d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+// Message time as shown on WhatsApp bubbles, e.g. "10:42".
+function clockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+// Project rooms are named "<project title> — Project Chat".
+function projectTitleOf(room: ChatRoom): string {
+  return room.name.replace(/ — Project Chat$/, '');
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -69,7 +94,7 @@ function RoomItem({ room, displayName, isSelected, unread, currentUserId, curren
         </div>
         <div className="min-w-0">
           <p className="text-sm font-medium text-gray-900 truncate">{displayName}</p>
-          <p className="text-xs text-gray-400 capitalize">{room.type === 'direct' ? 'Direct Message' : room.type}</p>
+          <p className="text-xs text-gray-400 capitalize">{room.type === 'direct' ? 'Direct Message' : room.type === 'project' ? 'Project chat' : room.type}</p>
         </div>
       </button>
       {canDelete && (
@@ -162,6 +187,25 @@ export default function Chat() {
     }
   }, []);
 
+  // Open the room named in ?room= (set when a chat notification is clicked), then
+  // clear it so it doesn't override rooms the user picks afterwards.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const roomParam = searchParams.get('room');
+  const [handledRoomParam, setHandledRoomParam] = useState<string | null>(null);
+  // Adjusting state while rendering (React's pattern for reacting to a changed
+  // value) rather than in an effect, which would render twice.
+  if (roomParam && rooms && roomParam !== handledRoomParam) {
+    setHandledRoomParam(roomParam);
+    const target = rooms.find((r) => r.id === roomParam);
+    if (target) selectRoom(target);
+  }
+  if (!roomParam && handledRoomParam) setHandledRoomParam(null);
+  useEffect(() => {
+    if (!roomParam || !rooms || roomParam !== handledRoomParam) return;
+    if (!rooms.some((r) => r.id === roomParam)) toast.error('That chat room is no longer available to you');
+    setSearchParams({}, { replace: true });
+  }, [roomParam, rooms, handledRoomParam, setSearchParams]);
+
   // ── WebSocket ──────────────────────────────────────────────────────────────
 
   const connectWs = useCallback((roomId: string) => {
@@ -208,13 +252,15 @@ export default function Chat() {
               setUnread((prev) => ({ ...prev, [ev.room_id!]: (prev[ev.room_id!] ?? 0) + 1 }));
               window.dispatchEvent(new Event('workplace:notification'));
             }
+            // Re-sort the room list so the chat with the newest message is on top.
+            qc.invalidateQueries({ queryKey: ['chat-rooms'] });
           }
         } catch { /* ignore malformed frame */ }
       });
     };
 
     wsRef.current = ws;
-  }, [token, user]);
+  }, [token, user, qc]);
 
   useEffect(() => {
     if (!selectedRoom) return;
@@ -223,9 +269,14 @@ export default function Chat() {
     return () => { wsRef.current?.close(); };
   }, [selectedRoom, connectWs]);
 
+  // Like WhatsApp: open a chat at the newest message instantly, then glide down
+  // smoothly as new messages arrive.
+  const lastScrolledRoom = useRef<string | null>(null);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, wsMessages]);
+    const opening = lastScrolledRoom.current !== (selectedRoom?.id ?? null);
+    lastScrolledRoom.current = selectedRoom?.id ?? null;
+    bottomRef.current?.scrollIntoView({ behavior: opening ? 'auto' : 'smooth' });
+  }, [messages, wsMessages, selectedRoom?.id]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -429,7 +480,17 @@ export default function Chat() {
               </div>
               <div>
                 <p className="font-semibold text-gray-900">{getRoomName(selectedRoom)}</p>
-                <p className="text-xs text-gray-400 capitalize">{selectedRoom.type === 'direct' ? 'Direct Message' : `${selectedRoom.type} room`}</p>
+                {selectedRoom.type === 'project' && selectedRoom.project_id ? (
+                  <Link
+                    to={`/projects/${selectedRoom.project_id}`}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800"
+                    title="Open the project"
+                  >
+                    <FolderKanban size={12} /> Project: {projectTitleOf(selectedRoom)}
+                  </Link>
+                ) : (
+                  <p className="text-xs text-gray-400 capitalize">{selectedRoom.type === 'direct' ? 'Direct Message' : `${selectedRoom.type} room`}</p>
+                )}
               </div>
             </div>
 
@@ -440,10 +501,20 @@ export default function Chat() {
                 const name        = getUserName(msg.sender_id);
                 const groups      = reactionGroups(msg.id);
                 const replyParent = msg.reply_to_id ? allMsgs.find((m) => m.id === msg.reply_to_id) : null;
-                const showHeader  = i === 0 || allMsgs[i - 1].sender_id !== msg.sender_id;
+                // A WhatsApp-style divider ("Today", "Yesterday", …) starts each new day.
+                const newDay      = i === 0 || new Date(allMsgs[i - 1].created_at).toDateString() !== new Date(msg.created_at).toDateString();
+                const showHeader  = newDay || allMsgs[i - 1].sender_id !== msg.sender_id;
 
                 return (
-                  <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} group`}>
+                  <Fragment key={msg.id}>
+                  {newDay && (
+                    <div className="flex justify-center my-3">
+                      <span className="text-[11px] font-medium text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+                        {dayLabel(msg.created_at)}
+                      </span>
+                    </div>
+                  )}
+                  <div className={`flex ${isMe ? 'justify-end' : 'justify-start'} group`}>
                     <div className={`flex items-end gap-2 max-w-[75%] ${isMe ? 'flex-row-reverse' : ''}`}>
                       {!isMe && (showHeader
                         ? <Avatar name={name} size="sm" />
@@ -454,7 +525,7 @@ export default function Chat() {
                         {showHeader && (
                           <div className={`flex items-center gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}>
                             <span className="text-xs font-medium text-gray-600">{isMe ? 'You' : name}</span>
-                            <span className="text-xs text-gray-400">{timeAgo(msg.created_at)}</span>
+                            <span className="text-xs text-gray-400" title={new Date(msg.created_at).toLocaleString()}>{clockTime(msg.created_at)}</span>
                           </div>
                         )}
 
@@ -548,6 +619,7 @@ export default function Chat() {
                       </div>
                     </div>
                   </div>
+                  </Fragment>
                 );
               })}
               <div ref={bottomRef} />

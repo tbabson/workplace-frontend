@@ -12,7 +12,8 @@ import toast from "react-hot-toast";
 
 function getNotificationRoute(type: NotificationType, refId: string | null): string {
   switch (type) {
-    case 'chat_message':       return '/chat';
+    // Open the exact room (e.g. a project's chat) the message was sent in.
+    case 'chat_message':       return refId ? `/chat?room=${refId}` : '/chat';
     case 'project_assigned':
     case 'project_unassigned':
     case 'project_progress':
@@ -108,7 +109,21 @@ export function Topbar({ title, onMenuClick }: { title?: string; onMenuClick?: (
         try {
           const n = JSON.parse(e.data) as Notification;
           if (n?.title) {
-            toast(n.title, { duration: 4000 });
+            // Clicking the pop-up goes to the same place as clicking it in the bell,
+            // e.g. the exact project chat a message was sent in.
+            toast((t) => (
+              <button
+                type="button"
+                className="text-left"
+                onClick={() => {
+                  toast.dismiss(t.id);
+                  navigate(getNotificationRoute(n.type, n.ref_id));
+                }}
+              >
+                <span className="block font-medium">{n.title}</span>
+                {n.body && <span className="block text-xs text-gray-500 line-clamp-2">{n.body}</span>}
+              </button>
+            ), { duration: 5000 });
             window.dispatchEvent(new Event('workplace:notification'));
           }
           if (n?.type === "attendance_sign_in" || n?.type === "attendance_sign_out") {
@@ -128,7 +143,7 @@ export function Topbar({ title, onMenuClick }: { title?: string; onMenuClick?: (
       clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, [isAuthenticated, token, queryClient]);
+  }, [isAuthenticated, token, queryClient, navigate]);
 
   // Close panel on outside click
   useEffect(() => {

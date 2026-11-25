@@ -80,7 +80,8 @@ export default function Users() {
         email: d.email,
         role: d.role as User['role'],
         position: d.position || null,
-        department_id: d.department_id || null,
+        // "" (not null) clears the department; null would mean "leave unchanged".
+        department_id: d.department_id || '',
         department_name: selectedDept?.name ?? null,
       });
     },
